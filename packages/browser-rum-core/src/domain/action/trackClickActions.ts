@@ -1,3 +1,4 @@
+import { getElementStack } from './elementStack'
 import type { ClocksState, Duration, TimeStamp } from '@datadog/js-core/time'
 import { timeStampNow, timeStampToClocks, relativeToClocks } from '@datadog/js-core/time'
 import { Observable, generateUUID } from '@datadog/browser-core'
@@ -51,13 +52,15 @@ export interface ClickAction {
   event: MouseEventOnElement
   frustrationTypes: FrustrationType[]
   events: Event[]
+  elementStack?: string
 }
 
 export function trackClickActions(
   lifeCycle: LifeCycle,
   domMutationObservable: Observable<RumMutationRecord[]>,
   windowOpenObservable: Observable<void>,
-  configuration: RumConfiguration
+  configuration: RumConfiguration,
+  elementStacks: WeakMap<Element, string>
 ) {
   const actionTracker = startEventTracker<ClickActionBase>(lifeCycle)
   const stopObservable = new Observable<void>()
@@ -72,7 +75,14 @@ export function trackClickActions(
     hadActivityOnPointerDown: () => boolean
   }>({
     onPointerDown: (pointerDownEvent) =>
-      processPointerDown(configuration, lifeCycle, domMutationObservable, pointerDownEvent, windowOpenObservable),
+      processPointerDown(
+        configuration,
+        lifeCycle,
+        domMutationObservable,
+        pointerDownEvent,
+        windowOpenObservable,
+        elementStacks
+      ),
     onPointerUp: ({ clickActionBase, ignore, hadActivityOnPointerDown }, startEvent, getUserActivity) => {
       startClickAction(
         configuration,
@@ -130,7 +140,8 @@ function processPointerDown(
   lifeCycle: LifeCycle,
   domMutationObservable: Observable<RumMutationRecord[]>,
   pointerDownEvent: MouseEventOnElement,
-  windowOpenObservable: Observable<void>
+  windowOpenObservable: Observable<void>,
+  elementStacks: WeakMap<Element, string>
 ) {
   let nodePrivacyLevel: NodePrivacyLevel
 
@@ -144,7 +155,7 @@ function processPointerDown(
     return undefined
   }
 
-  const clickActionBase = computeClickActionBase(pointerDownEvent, nodePrivacyLevel, configuration)
+  const clickActionBase = computeClickActionBase(pointerDownEvent, nodePrivacyLevel, configuration, elementStacks)
 
   let hadActivityOnPointerDown = false
 
@@ -236,12 +247,13 @@ function startClickAction(
   })
 }
 
-export type ClickActionBase = Pick<ClickAction, 'type' | 'name' | 'nameSource' | 'target' | 'position'>
+export type ClickActionBase = Pick<ClickAction, 'type' | 'name' | 'nameSource' | 'target' | 'position' | 'elementStack'>
 
 function computeClickActionBase(
   event: MouseEventOnElement,
   nodePrivacyLevel: NodePrivacyLevel,
-  configuration: RumConfiguration
+  configuration: RumConfiguration,
+  elementStacks: WeakMap<Element, string>
 ): ClickActionBase {
   const target = getEventTarget(event)
 
@@ -258,6 +270,7 @@ function computeClickActionBase(
 
   return {
     type: ActionType.CLICK,
+    elementStack: getElementStack(target, elementStacks),
     target: {
       width: Math.round(rect.width),
       height: Math.round(rect.height),
