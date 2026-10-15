@@ -32,10 +32,10 @@ const LOGS_CONFIG: Partial<LogsInitConfiguration> = {
 // Debug IDs are derived from each chunk's content hash, so they're stable across rebuilds
 // (regenerate these constants if app source/deps change). The shared `lib` remote is its own chunk,
 // so its debug ID is the same for every app.
-const APP1_EXPOSE_CHUNK = '__federation_expose_app1-0b975610772143724d2f-app1.js'
-const APP1_DEBUG_ID = '33164643-dc2f-4bf0-8440-b443adfa15c3'
-const APP2_EXPOSE_CHUNK = '__federation_expose_app2-8042c1cdfd7c71d0bf47-app2.js'
-const APP2_DEBUG_ID = 'cb80d79d-2dfc-4bc0-9872-92b454fb59e1'
+const APP1_EXPOSE_CHUNK = '__federation_expose_app1-e789959d1f77adeb9551-app1.js'
+const APP1_DEBUG_ID = 'aa69f51f-7cc0-48fd-8f7a-e3958ede114f'
+const APP2_EXPOSE_CHUNK = '__federation_expose_app2-c237de01250c6ee299b5-app2.js'
+const APP2_DEBUG_ID = '06360c95-414c-4cf8-a285-4f4ad01d6c92'
 const LIB_EXPOSE_CHUNK = '__federation_expose_lib-c0a8a100340f04ff2712-lib.js'
 const LIB_DEBUG_ID = '4564c6ea-a5bb-4355-968a-7de8d685fe65'
 
@@ -265,6 +265,95 @@ test.describe('microfrontend', () => {
           expect(viewEvent).toBeTruthy()
           expect(viewEvent.service).toBe('mfe-service')
           expect(viewEvent.version).toBe('0.1.0')
+        })
+    })
+
+    test.describe('with element stacks', () => {
+      for (const registerBeforeInit of [false, true]) {
+        createTest(`automatic clicks use element stacks registered ${registerBeforeInit ? 'before' : 'after'} init`)
+          .withRum({ service: 'main-service', version: '1.0.0', trackUserInteractions: true })
+          .withRumSlim()
+          .withSetup(microfrontendSetup)
+          .withHead('<script>document.documentElement.setAttribute("data-attach-element-stack", "")</script>')
+          .withBody('<button id="shell-fetch" onclick="fetch(\'/ok\')">Shell fetch</button>')
+          .withRumInit(
+            registerBeforeInit
+              ? (configuration) => {
+                  const observer = new MutationObserver(() => {
+                    if (document.getElementById('app1-fetch') && document.getElementById('app2-fetch')) {
+                      observer.disconnect()
+                      window.DD_RUM!.init(configuration)
+                    }
+                  })
+                  observer.observe(document, { childList: true, subtree: true })
+                }
+              : (configuration) => window.DD_RUM!.init(configuration)
+          )
+          .run(async ({ intakeRegistry, flushEvents, page, browserName }) => {
+            await expect(page.locator('#app1-fetch')).toBeVisible()
+            await expect(page.locator('#app2-fetch')).toBeVisible()
+            await page.click('#app1-fetch')
+            await page.click('#app2-fetch')
+            await page.click('#shell-fetch')
+            if (browserName === 'webkit') {
+              // WebKit can drop the unload batch; await regular delivery before navigating.
+              test.setTimeout(60_000)
+              await expect.poll(() => intakeRegistry.rumActionEvents.length, { timeout: 40_000 }).toBe(3)
+            }
+            await flushEvents()
+            const clicks = intakeRegistry.rumActionEvents.filter((event) => event.action.type === 'click')
+            expect(clicks).toHaveLength(3)
+            expect(clicks).toEqual(
+              expect.arrayContaining([
+                expect.objectContaining({
+                  service: 'mfe-app1-service',
+                  version: '1.0.0',
+                  action: expect.objectContaining({ target: { name: 'app1-fetch' } }),
+                }),
+                expect.objectContaining({
+                  service: 'mfe-app2-service',
+                  version: '0.2.0',
+                  action: expect.objectContaining({ target: { name: 'app2-fetch' } }),
+                }),
+                expect.objectContaining({
+                  service: 'main-service',
+                  version: '1.0.0',
+                  action: expect.objectContaining({ target: { name: 'Shell fetch' } }),
+                }),
+              ])
+            )
+            expect(JSON.stringify(clicks)).not.toContain('elementStack')
+            expect(JSON.stringify(clicks)).not.toContain('HandlingStack: element')
+          })
+      }
+
+      createTest('automatic clicks expose element stacks for manual attribution')
+        .withRum({
+          service: 'main-service',
+          version: '1.0.0',
+          trackUserInteractions: true,
+          beforeSend: (event, context) => {
+            if (event.type === 'action' && 'elementStack' in context && context.elementStack?.includes('app1.js')) {
+              event.service = 'manual-app1'
+              event.version = 'manual-version'
+            }
+            return true
+          },
+        })
+        .withRumSlim()
+        .withSetup(microfrontendSetup)
+        .withHead('<script>document.documentElement.setAttribute("data-attach-element-stack", "")</script>')
+        .run(async ({ intakeRegistry, flushEvents, page, browserName }) => {
+          await page.click('#app1-fetch')
+          if (browserName === 'webkit') {
+            test.setTimeout(60_000)
+            await expect.poll(() => intakeRegistry.rumActionEvents.length, { timeout: 40_000 }).toBe(1)
+          }
+          await flushEvents()
+          const clicks = intakeRegistry.rumActionEvents.filter((event) => event.action.type === 'click')
+          expect(clicks).toHaveLength(1)
+          expect(clicks[0]).toMatchObject({ service: 'manual-app1', version: 'manual-version' })
+          expect(JSON.stringify(clicks)).not.toContain('HandlingStack: element')
         })
     })
 

@@ -4,6 +4,7 @@ declare module 'lib/lib' {
 
 interface Window {
   DD_RUM: {
+    attachElementStack: (element: Element) => void
     addError: (error: Error) => void
     addAction: (name: string, context?: any) => void
     startDurationVital: (name: string, options?: { vitalKey?: string }) => void
